@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<search>
+  <entry>
+    <title>使用容器，OpenResty服务部署Django项目到Linux服务器上</title>
+    <url>/%E4%BD%BF%E7%94%A8%E5%AE%B9%E5%99%A8%E3%80%81OpenResty%E6%9C%8D%E5%8A%A1%E9%83%A8%E7%BD%B2Django%E9%A1%B9%E7%9B%AE%E5%88%B0linux%E6%9C%8D%E5%8A%A1%E5%99%A8%E4%B8%8A/</url>
+    <content><![CDATA[<h2 id="前言"><a href="#前言" class="headerlink" title="前言"></a>前言</h2><p>最近闲来无事，想到之前笔者重装系统导致丢失了大量数据和自己珍藏的一些应用，于是突发奇想要部署一个自己的小工具箱到服务器上<br>这样不就可以不用担心自己的珍藏丢失了吗？说干就干，于是笔者很快的用 Django 创建了一个自己的工具箱项目<br>（PS：不过说到底，还是做好本地备份比较重要，大家不要过度相信服务器的作用，数据在手里最靠谱；笔者是因为没办法，制作了一份数据备份，手头也没有其他的存储介质，再加上误操作才导致笔者的数据不幸丧生）<br>闲话少说，笔者的环境是 OpenResty 在容器内，同时笔者的服务器也安装了 1Panel 面板，所以这大概算是踩得坑比较多的一回，平时大家有问题可以问 ChatGPT ，这种文档少的其实很难找…</p>
+<h2 id="开始部署"><a href="#开始部署" class="headerlink" title="开始部署"></a>开始部署</h2><p>上传 Django 项目到服务器上前，一定要创建一个 requirements.txt 便于后续下载必要的依赖</p>
+<div class="highlight-container" data-rel="Plaintext"><figure class="iseeu highlight plaintext"><table><tr><td class="code"><pre><span class="line">pip freeze &gt; requirements.txt</span><br></pre></td></tr></table></figure></div>
+
+<p>在目录创建 Django 文件夹，然后上传到该文件夹</p>
+<div class="highlight-container" data-rel="Plaintext"><figure class="iseeu highlight plaintext"><table><tr><td class="code"><pre><span class="line">mkdir Django</span><br><span class="line">cd Django</span><br></pre></td></tr></table></figure></div>
+
+<h3 id="容器创建"><a href="#容器创建" class="headerlink" title="容器创建"></a>容器创建</h3><p>进入自己的项目，在 manage.py 同级路径创建 Dockerfile 文件</p>
+<div class="highlight-container" data-rel="Plaintext"><figure class="iseeu highlight plaintext"><table><tr><td class="code"><pre><span class="line"># 这里是选择了python官方镜像3.12-slim版本，相对于3.12更加轻便</span><br><span class="line">FROM python:3.12-slim</span><br><span class="line"></span><br><span class="line"># 设置环境变量，优化运行环境</span><br><span class="line">ENV PYTHONDONTWRITEBYTECODE 1 # 不生成.pyc文件，减少内存占用</span><br><span class="line">ENV PYTHONUNBUFFERED 1 # 实时显示python输出，不经过缓冲</span><br><span class="line"></span><br><span class="line"># 设置容器内 Django 的工作目录</span><br><span class="line">WORKDIR /app</span><br><span class="line"></span><br><span class="line"># 下载容器需要的依赖</span><br><span class="line">#这里的 mysqlclient 是因为笔者使用了 mysql 服务，同时这里的坑很多，笔者装了好几次</span><br><span class="line">RUN apt-get update \</span><br><span class="line">    &amp;&amp; apt-get install -y \</span><br><span class="line">    pkg-config \</span><br><span class="line">    default-libmysqlclient-dev \</span><br><span class="line">    build-essential \</span><br><span class="line">    &amp;&amp; rm -rf /var/lib/apt/lists/*</span><br><span class="line"></span><br><span class="line"># 下载 Python 需要的依赖</span><br><span class="line">COPY requirements.txt /app/</span><br><span class="line">RUN pip install --no-cache-dir -r requirements.txt</span><br><span class="line"></span><br><span class="line"># 复制当前目录下所有内容到容器的工作目录</span><br><span class="line">COPY . /app/</span><br><span class="line"></span><br><span class="line"># 迁移和收集 Django 需要的静态文件</span><br><span class="line">RUN python manage.py migrate</span><br><span class="line">RUN python manage.py collectstatic --noinput</span><br><span class="line"></span><br><span class="line"># 暴露端口和指定容器启动时的命令</span><br><span class="line">EXPOSE 8000</span><br><span class="line">CMD [&quot;gunicorn&quot;, &quot;--bind&quot;, &quot;0.0.0.0:8000&quot;, &quot;toolsite.wsgi:application&quot;]</span><br></pre></td></tr></table></figure></div>
+
+<p>请注意，一定要在确保创建了 requirements.txt ，不然会报错</p>
+<p>之后同级目录下创建 docker-compose.yml</p>
+<div class="highlight-container" data-rel="Plaintext"><figure class="iseeu highlight plaintext"><table><tr><td class="code"><pre><span class="line">services:</span><br><span class="line">  web:</span><br><span class="line">    build: .</span><br><span class="line">    command: gunicorn toolsite.wsgi:application --bind 0.0.0.0:8000</span><br><span class="line">    volumes:</span><br><span class="line">      - .:/app</span><br><span class="line">		# 注意这里是重中之重，不创建的话你就需要自己手动迁移静态/动态文件到 OpenResty 的存放路径进行内容的更新</span><br><span class="line">      - /opt/1panel/apps/openresty/openresty/www/sites/your.domain.site/index/mediafiles:/app/mediafiles</span><br><span class="line">      - /opt/1panel/apps/openresty/openresty/www/sites/your.domain.site/index/staticfiles:/app/staticfiles</span><br><span class="line">      # - 添加更多你的路径映射，格式是主机目录：容器内目录</span><br><span class="line">    # 主机端口映射</span><br><span class="line">    ports:</span><br><span class="line">      - &quot;8000:8000&quot;</span><br></pre></td></tr></table></figure></div>
+
+<p>由于笔者的工具箱是需要后台更新内容的，相信各位选择 Django 肯定也不只是单纯使用静态文件来部署网页，所以笔者们可以提前配置好需要的映射路径</p>
+<p>在安装时最好加上一个 .dockerignore 文件来避免引入不必要的文件，比如本地创建的 .pyc 文件等，大家按需要来更改内容，避免不必要的文件丢失</p>
+<div class="highlight-container" data-rel="Plaintext"><figure class="iseeu highlight plaintext"><table><tr><td class="code"><pre><span class="line">__pycache__</span><br><span class="line">.dockerignore</span><br><span class="line">Dockerfile</span><br><span class="line">docker-compose.yml</span><br><span class="line">*.pyc</span><br><span class="line">*.pyo</span><br><span class="line">*.pyd</span><br><span class="line">.Python</span><br><span class="line">env/</span><br><span class="line">venv/</span><br></pre></td></tr></table></figure></div>
+
+<p>那么到这里就可以开始尝试构建镜像并启动容器了</p>
+<div class="highlight-container" data-rel="Plaintext"><figure class="iseeu highlight plaintext"><table><tr><td class="code"><pre><span class="line">docker-compose up --build</span><br></pre></td></tr></table></figure></div>
+
+<h3 id="Django-配置修改"><a href="#Django-配置修改" class="headerlink" title="Django 配置修改"></a>Django 配置修改</h3><p>在您的 Django 项目中的 settings.py 中，您还应当配置好以下内容</p>
+<div class="highlight-container" data-rel="Plaintext"><figure class="iseeu highlight plaintext"><table><tr><td class="code"><pre><span class="line"># 关闭 debug</span><br><span class="line">DEBUG = False</span><br><span class="line"></span><br><span class="line"># 添加允许的 IP 和域名（注意这里填的是您服务器的 IP 和域名</span><br><span class="line">ALLOWED_HOSTS = [&#x27;your.server.ip&#x27;,&#x27;your.domain.site&#x27;]</span><br><span class="line"></span><br><span class="line"># 修改默认语言和时区</span><br><span class="line">LANGUAGE_CODE = &#x27;zh-hans&#x27;</span><br><span class="line">TIME_ZONE = &#x27;Asia/Shanghai&#x27;</span><br><span class="line"></span><br><span class="line"># 设置静态文件和媒体文件的URL和相对存储地址，为容器内的地址，与之前的映射对应</span><br><span class="line">STATIC_URL = &#x27;/static/&#x27;</span><br><span class="line">STATIC_ROOT = &#x27;/app/staticfiles/&#x27;</span><br><span class="line"></span><br><span class="line">MEDIA_URL = &#x27;/media/&#x27;</span><br><span class="line">MEDIA_ROOT = &#x27;/app/mediafiles/&#x27;</span><br><span class="line"></span><br><span class="line"># 设置 CSRF 信任的站点域名，确保您可以在登录 admin 界面</span><br><span class="line">CSRF_TRUSTED_ORIGINS = [&#x27;https://your.domain.site&#x27;]</span><br></pre></td></tr></table></figure></div>
+
+<p>注意，您要是使用了数据库服务记得对 settings.py 目录进行更改</p>
+<div class="highlight-container" data-rel="Plaintext"><figure class="iseeu highlight plaintext"><table><tr><td class="code"><pre><span class="line">DATABASES = &#123;</span><br><span class="line">    &#x27;default&#x27;: &#123;</span><br><span class="line">        &#x27;ENGINE&#x27;: &#x27;django.db.backends.postgresql&#x27;,</span><br><span class="line">        # 从这里开始，要仔细检查要改的部分</span><br><span class="line">        &#x27;NAME&#x27;: &#x27;mydatabase&#x27;,</span><br><span class="line">        &#x27;USER&#x27;: &#x27;myuser&#x27;,</span><br><span class="line">        &#x27;PASSWORD&#x27;: &#x27;mypassword&#x27;,</span><br><span class="line">        &#x27;HOST&#x27;: &#x27;db&#x27;,</span><br><span class="line">        &#x27;PORT&#x27;: &#x27;5432&#x27;,</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></div>
+
+<h3 id="OpenResty-部分"><a href="#OpenResty-部分" class="headerlink" title="OpenResty 部分"></a>OpenResty 部分</h3><p>首先您应当在反向代理中创建好您的域名反代理，然后点击您的网站进入配置界面，然后修改您网站的配置文件，在其中添加如下内容</p>
+<div class="highlight-container" data-rel="Plaintext"><figure class="iseeu highlight plaintext"><table><tr><td class="code"><pre><span class="line"># Static files</span><br><span class="line">location /static/ &#123;</span><br><span class="line">    alias /www/sites/your.domain.site/index/staticfiles/;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"># Media files</span><br><span class="line">location /media/ &#123;</span><br><span class="line">    alias /www/sites/your.domain.site/index/mediafiles/;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"># Proxy settings</span><br><span class="line">location / &#123;</span><br><span class="line">    proxy_pass http://容器 IP :8000;  # Django容器的IP和端口</span><br><span class="line">    proxy_set_header Host $host;</span><br><span class="line">    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;</span><br><span class="line">    proxy_set_header X-Forwarded-Host $server_name;</span><br><span class="line">    proxy_set_header X-Real-IP $remote_addr;</span><br><span class="line">    proxy_http_version 1.1;</span><br><span class="line">    proxy_set_header Upgrade $http_upgrade;</span><br><span class="line">    proxy_set_header Connection &quot;upgrade&quot;;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></div>
+
+<p>当这一切都完成了之后，笔者想您也许可以试着访问您的网站了，相信静态文件会成功的显示在您的页面上</p>
+<h2 id="后记"><a href="#后记" class="headerlink" title="后记"></a>后记</h2><p>怎么说呢，写这个东西看起来轻松，实际上折腾了笔者一天多的时间，大部分时间花在了踩坑上面，希望看到这篇文章的人可以少走一些类似的弯路</p>
+]]></content>
+      <tags>
+        <tag>Docker</tag>
+        <tag>OpenResty</tag>
+        <tag>Django</tag>
+        <tag>1Panel</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>初次见面</title>
+    <url>/%E5%88%9D%E6%AC%A1%E8%A7%81%E9%9D%A2/</url>
+    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a>前言</h3><h4 id="首先，本人在所有文章前说明，项目仅图一乐"><a href="#首先，本人在所有文章前说明，项目仅图一乐" class="headerlink" title="首先，本人在所有文章前说明，项目仅图一乐"></a>首先，本人在所有文章前说明，项目仅图一乐</h4><h4 id="不必争论对与错，折腾只在乎过程————"><a href="#不必争论对与错，折腾只在乎过程————" class="headerlink" title="不必争论对与错，折腾只在乎过程————"></a>不必争论对与错，折腾只在乎过程————</h4><br>
+认知到自己在技术领域的经验还算有限，但是还是热衷于探索自己不熟悉的领域，这大概就是学习的感觉。我的兴趣，或者说时间都花费在阅读文档、发现问题和修复bug上，虽然如此，我也很享受创建属于自己的新的项目，这让我有一种满足感
+
+<h3 id="开发经历"><a href="#开发经历" class="headerlink" title="开发经历"></a>开发经历</h3><ul>
+<li><p><strong>Django</strong>：曾尝试使用 Django 建立一个简单的论坛，尽管在完善过程中不幸丢失了存档，但是能力还是得到了进一步提高，之后也是用django在容器内部署了一个属于自己的小工具箱，这个我会在后面的文章中提到</p>
+</li>
+<li><p><strong>Koishi</strong>：使用 TypeScript 写过一个基础的 Koishi 机器人签到插件，为了偷懒，部分功能和注释使用AI生成以节省时间…(纯懒狗)</p>
+</li>
+<li><p><strong>Android Studio</strong>：使用 Android Studio 对野火 IM 项目的安卓客户端进行了些许修改，了解了部分安卓 app 的运行机制</p>
+</li>
+<li><p><strong>Go-cqhttp &amp; Nonebot</strong>：在机器人技术兴起时，使用 go-cqhttp 和 nonebot 开发了几个机器人项目，例如糖糖和琉璃酱</p>
+</li>
+<li><p><strong>图形化</strong>：试图使用 C# 进行图形化开发来整合 go-cqhttp 和 nonebot ，实现一键部署的功能</p>
+</li>
+<li><p><strong>其他杂项</strong>：还尝试过奇妙的lua和一些安卓端qq机器人开发，折腾过python的jieba库，通过拆词来训练AI（部分理解大概是强行灌输的…)</p>
+</li>
+</ul>
+<h3 id="开发环境"><a href="#开发环境" class="headerlink" title="开发环境"></a>开发环境</h3><ul>
+<li><p><strong>后端语言</strong>：主要使用 Python 进行后端开发，看得懂部分语言的逻辑，看过也写过一点 Java、C、C# 的内容</p>
+</li>
+<li><p><strong>前端语言</strong>：会写一点 HTML、CSS 和 JavaScript (PS:都玩django了，不会前端怎么行)</p>
+</li>
+<li><p><strong>硬件开发</strong>：尝试过一些简单和基础的单片机硬件开发…再就是动手组装一些产品…比较懒所以不说了…</p>
+</li>
+</ul>
+<h3 id="联系方式"><a href="#联系方式" class="headerlink" title="联系方式"></a>联系方式</h3><p>如果您也对折腾新事物感兴趣，或者您有任何建议和指教，随时欢迎您联系我~</p>
+<ul>
+<li><p><strong>电子邮件</strong>：<a class="link"   href="mailto:&#x6e;&#97;&#116;&#x73;&#117;&#115;&#x61;&#64;&#x6d;&#x65;&#110;&#x75;&#101;&#116;&#x2e;&#97;&#x73;&#105;&#x61;" >&#x6e;&#97;&#116;&#x73;&#117;&#115;&#x61;&#64;&#x6d;&#x65;&#110;&#x75;&#101;&#116;&#x2e;&#97;&#x73;&#105;&#x61; <i class="fa-regular fa-arrow-up-right-from-square fa-sm"></i></a></p>
+</li>
+<li><p><strong>GitHub</strong>：<a class="link"   href="https://github.com/imadokinatsusa" >Natsusa’s GitHub <i class="fa-regular fa-arrow-up-right-from-square fa-sm"></i></a></p>
+</li>
+<li><p><strong>博客</strong>：<a href="https://imadokinatsusa.github.io/">夏然的博客</a></p>
+</li>
+</ul>
+]]></content>
+      <tags>
+        <tag>简介</tag>
+        <tag>声明</tag>
+        <tag>杂谈</tag>
+      </tags>
+  </entry>
+</search>
